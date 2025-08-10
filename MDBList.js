@@ -376,8 +376,7 @@
             req.silent(tmdbExternalUrl, function(ext) {
                 var imdbId = ext && (ext.imdb_id || ext.imdbId) ? (ext.imdb_id || ext.imdbId) : null;
                 if (!imdbId) {
-                    callback({ error: 'No imdbId' });
-                    return;
+                    return fallbackByQuery();
                 }
 
                 // 2) Запрос к KP API по imdbId
@@ -393,19 +392,57 @@
                                 // v2.2/films?imdbId=... обычно возвращает один фильм или массив items
                                 var film = response && (response.items && response.items.length ? response.items[0] : response);
                                 var kp = film && (typeof film.ratingKinopoisk === 'number' ? film.ratingKinopoisk : (film.rating && film.rating.kp));
-                                if (typeof kp === 'number') callback({ kp: kp }); else callback({ error: 'No kp rating' });
+                                if (typeof kp === 'number') callback({ kp: kp }); else fallbackByQuery();
                             } catch (e) {
-                                callback({ error: 'KP parse error' });
+                                fallbackByQuery();
                             }
                         } else {
-                            callback({ error: 'KP http ' + xhr.status });
+                            fallbackByQuery();
                         }
                     }
                 };
                 xhr.send();
             }, function(xhr, status){
-                callback({ error: 'TMDB ext error ' + status });
+                fallbackByQuery();
             });
+            
+            // Fallback: search by English title and year
+            function fallbackByQuery(){
+                try {
+                    var detailsUrl = Lampa.TMDB.api((method === 'tv' ? 'tv/' : 'movie/') + tmdbId + '?api_key=' + Lampa.TMDB.key() + '&language=en-US');
+                    var req2 = new Lampa.Reguest();
+                    req2.clear();
+                    req2.timeout(8000);
+                    req2.silent(detailsUrl, function(det){
+                        var titleEn = det && (det.original_title || det.original_name || det.title || det.name) || '';
+                        var year = 0;
+                        var dateStr = (det && (det.release_date || det.first_air_date)) || '';
+                        if (dateStr) {
+                            year = parseInt((dateStr + '').slice(0,4));
+                        }
+                        if (!titleEn) { return callback({ error: 'No title for KP search' }); }
+                        var searchUrl = 'https://kinopoiskapiunofficial.tech/api/v2.2/films?keyword=' + encodeURIComponent(titleEn) + (year ? ('&yearFrom=' + year + '&yearTo=' + year) : '');
+                        var xhr2 = new XMLHttpRequest();
+                        xhr2.open('GET', searchUrl, true);
+                        xhr2.setRequestHeader('X-API-KEY', kpApiKey);
+                        xhr2.onreadystatechange = function(){
+                            if (xhr2.readyState === 4) {
+                                if (xhr2.status >= 200 && xhr2.status < 300) {
+                                    try {
+                                        var r = JSON.parse(xhr2.responseText);
+                                        var item = r && r.items && r.items.length ? r.items[0] : null;
+                                        var kpVal = item && (typeof item.ratingKinopoisk === 'number' ? item.ratingKinopoisk : (item.rating && item.rating.kp));
+                                        if (typeof kpVal === 'number') callback({ kp: kpVal }); else callback({ error: 'No kp rating by query' });
+                                    } catch(e) { callback({ error: 'KP search parse error' }); }
+                                } else {
+                                    callback({ error: 'KP search http ' + xhr2.status });
+                                }
+                            }
+                        };
+                        xhr2.send();
+                    }, function(xh, st){ callback({ error: 'TMDB en details error ' + st }); });
+                } catch(e){ callback({ error: 'KP fallback error' }); }
+            }
         } catch (e) {
             callback({ error: 'KP general error' });
         }

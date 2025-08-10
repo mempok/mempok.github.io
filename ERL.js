@@ -1,4 +1,4 @@
 (function () {
     'use strict';
-    Lampa.Utils.putScriptAsync(['https://psahx.github.io/ps_plug/MDBList.js'], function () { });
+    Lampa.Utils.putScriptAsync(['https://mempok.github.io/MDBList.js'], function () { });
 })();

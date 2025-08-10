@@ -9,7 +9,11 @@
         cache_time: 60 * 60 * 12 * 1000, // 12 hours cache duration
         cache_key: 'mdblist_ratings_cache', // Unique storage key for ratings data
         cache_limit: 500, // Max items in cache
-        request_timeout: 10000 // 10 seconds request timeout
+        request_timeout: 10000, // 10 seconds request timeout
+        // KP rating persistent cache
+        kp_cache_time: 60 * 60 * 12 * 1000, // 12 hours
+        kp_cache_key: 'kp_ratings_cache',
+        kp_cache_limit: 500
     };
 
     
@@ -414,6 +418,32 @@
     // --- KinoPoisk Rating State ---
     var kpRatingsCache = {};
     var kpRatingsPending = {};
+
+    function kpGetPersistentCache() {
+        if (!window.Lampa || !Lampa.Storage) return {};
+        return Lampa.Storage.cache(config.kp_cache_key, config.kp_cache_limit, {});
+    }
+
+    function kpGetCached(tmdbId) {
+        if (!window.Lampa || !Lampa.Storage) return null;
+        var cache = kpGetPersistentCache();
+        var now = Date.now();
+        var entry = cache[tmdbId];
+        if (!entry) return null;
+        if ((now - entry.timestamp) > config.kp_cache_time) {
+            delete cache[tmdbId];
+            Lampa.Storage.set(config.kp_cache_key, cache);
+            return null;
+        }
+        return entry.data; // { kp: number }
+    }
+
+    function kpSetCached(tmdbId, data) {
+        if (!window.Lampa || !Lampa.Storage) return;
+        var cache = kpGetPersistentCache();
+        cache[tmdbId] = { timestamp: Date.now(), data: data };
+        Lampa.Storage.set(config.kp_cache_key, cache);
+    }
     // -----------------------------
 
 
@@ -567,15 +597,24 @@
                 var shouldFetchKp = (showKpToggle === true || showKpToggle === 'true');
                 var kpApiKey = Lampa.Storage.get('kinopoisk_api_key');
                 if (shouldFetchKp && kpApiKey && !kpRatingsPending[data.id]) {
-                    kpRatingsPending[data.id] = true;
-                    fetchKinopoiskRating(data, function(kpResult) {
-                        kpRatingsCache[data.id] = kpResult;
-                        delete kpRatingsPending[data.id];
-                        var tmdb_url2 = Lampa.TMDB.api((data.name ? 'tv' : 'movie') + '/' + data.id + '?api_key=' + Lampa.TMDB.key() + '&append_to_response=content_ratings,release_dates&language=' + Lampa.Storage.get('language'));
-                        if (typeof loaded !== 'undefined' && loaded[tmdb_url2]) {
-                            _this.draw(loaded[tmdb_url2]);
-                        }
-                    });
+                    // Try persistent cache first
+                    var cached = kpGetCached(data.id);
+                    if (cached && typeof cached.kp === 'number') {
+                        kpRatingsCache[data.id] = cached;
+                    } else {
+                        kpRatingsPending[data.id] = true;
+                        fetchKinopoiskRating(data, function(kpResult) {
+                            if (kpResult && typeof kpResult.kp === 'number') {
+                                kpRatingsCache[data.id] = kpResult;
+                                kpSetCached(data.id, kpResult);
+                            }
+                            delete kpRatingsPending[data.id];
+                            var tmdb_url2 = Lampa.TMDB.api((data.name ? 'tv' : 'movie') + '/' + data.id + '?api_key=' + Lampa.TMDB.key() + '&append_to_response=content_ratings,release_dates&language=' + Lampa.Storage.get('language'));
+                            if (typeof loaded !== 'undefined' && loaded[tmdb_url2]) {
+                                _this.draw(loaded[tmdb_url2]);
+                            }
+                        });
+                    }
                 }
             }
             // --- End Ratings Fetch ---

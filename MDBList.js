@@ -320,6 +320,14 @@
                           ratingsResult[rating.source] = rating.value;
                      }
                  });
+                  // Save ids/title/year for later KP usage
+                  try {
+                      if (response.ids && response.ids.imdb) mdblistIdsByTmdb[tmdb_id] = response.ids.imdb;
+                      mdblistTitleYearByTmdb[tmdb_id] = {
+                          title: response.title || response.original_title || null,
+                          year: response.year || null
+                      };
+                  } catch(e) {}
             } else if (response && response.error) {
                 // Handle specific errors from MDBList API (e.g., invalid key)
                 console.error("MDBLIST_Fetcher: API Error from MDBList for TMDB ID:", tmdb_id, response.error);
@@ -360,26 +368,62 @@
     // --- KinoPoisk Fetching Logic (via kinopoiskapiunofficial.tech) ---
     function fetchKinopoiskRating(movieData, callback) {
         try {
-            // We need imdbId to query KP quickly; if нет imdb_id, попробуем через external_ids TMDB
             var tmdbId = movieData && movieData.id;
-            var method = movieData && movieData.method ? movieData.method : (movieData && movieData.name ? 'tv' : 'movie');
             if (!tmdbId) return callback({ error: 'No TMDB id' });
-
             var kpApiKey = Lampa.Storage.get('kinopoisk_api_key');
             if (!kpApiKey) return callback({ error: 'No KP api key' });
 
-            // 1) Получаем imdb_id через TMDB external_ids
-            var tmdbExternalUrl = Lampa.TMDB.api((method === 'tv' ? 'tv/' : 'movie/') + tmdbId + '/external_ids?api_key=' + Lampa.TMDB.key());
-            var req = new Lampa.Reguest();
-            req.clear();
-            req.timeout(8000);
-            req.silent(tmdbExternalUrl, function(ext) {
-                var imdbId = ext && (ext.imdb_id || ext.imdbId) ? (ext.imdb_id || ext.imdbId) : null;
-                if (!imdbId) {
-                    return fallbackByQuery();
-                }
+            var imdbId = movieData.imdb_id || mdblistIdsByTmdb[tmdbId] || null;
 
-                // 2) Запрос к KP API по imdbId
+            function fallbackByTitleYear() {
+                try {
+                    var cached = mdblistTitleYearByTmdb[tmdbId] || {};
+                    var title = (movieData.original_title || movieData.title || movieData.name || cached.title || '').toString().trim();
+                    var year = 0;
+                    if (movieData.year) year = parseInt(movieData.year);
+                    if (!year && cached.year) year = parseInt(cached.year);
+                    if (!title) return callback({ error: 'No title for KP search' });
+
+                    var searchUrl = 'https://kinopoiskapiunofficial.tech/api/v2.2/films?keyword=' + encodeURIComponent(title) + (year ? ('&yearFrom=' + year + '&yearTo=' + year) : '');
+                    var xhr2 = new XMLHttpRequest();
+                    xhr2.open('GET', searchUrl, true);
+                    xhr2.setRequestHeader('X-API-KEY', kpApiKey);
+                    xhr2.onreadystatechange = function(){
+                        if (xhr2.readyState === 4) {
+                            if (xhr2.status >= 200 && xhr2.status < 300) {
+                                try {
+                                    var r = JSON.parse(xhr2.responseText);
+                                    var item = r && r.items && r.items.length ? r.items[0] : null;
+                                    if (item && item.kinopoiskId) {
+                                        var det = new XMLHttpRequest();
+                                        det.open('GET', 'https://kinopoiskapiunofficial.tech/api/v2.2/films/' + item.kinopoiskId, true);
+                                        det.setRequestHeader('X-API-KEY', kpApiKey);
+                                        det.onreadystatechange = function(){
+                                            if (det.readyState === 4) {
+                                                if (det.status >= 200 && det.status < 300) {
+                                                    try {
+                                                        var dj = JSON.parse(det.responseText);
+                                                        if (typeof dj.ratingKinopoisk === 'number') return callback({ kp: dj.ratingKinopoisk });
+                                                    } catch(_){}
+                                                }
+                                                callback({ error: 'No kp rating by query' });
+                                            }
+                                        };
+                                        det.send();
+                                    } else {
+                                        callback({ error: 'No kp rating by query' });
+                                    }
+                                } catch(e) { callback({ error: 'KP search parse error' }); }
+                            } else {
+                                callback({ error: 'KP search http ' + xhr2.status });
+                            }
+                        }
+                    };
+                    xhr2.send();
+                } catch(e){ callback({ error: 'KP fallback error' }); }
+            }
+
+            if (imdbId) {
                 var kpUrl = 'https://kinopoiskapiunofficial.tech/api/v2.2/films?imdbId=' + encodeURIComponent(imdbId);
                 var xhr = new XMLHttpRequest();
                 xhr.open('GET', kpUrl, true);
@@ -389,59 +433,17 @@
                         if (xhr.status >= 200 && xhr.status < 300) {
                             try {
                                 var response = JSON.parse(xhr.responseText);
-                                // v2.2/films?imdbId=... обычно возвращает один фильм или массив items
                                 var film = response && (response.items && response.items.length ? response.items[0] : response);
                                 var kp = film && (typeof film.ratingKinopoisk === 'number' ? film.ratingKinopoisk : (film.rating && film.rating.kp));
-                                if (typeof kp === 'number') callback({ kp: kp }); else fallbackByQuery();
-                            } catch (e) {
-                                fallbackByQuery();
-                            }
-                        } else {
-                            fallbackByQuery();
-                        }
+                                if (typeof kp === 'number') callback({ kp: kp }); else fallbackByTitleYear();
+                            } catch (e) { fallbackByTitleYear(); }
+                        } else { fallbackByTitleYear(); }
                     }
                 };
                 xhr.send();
-            }, function(xhr, status){
-                fallbackByQuery();
-            });
-            
-            // Fallback: search by English title and year
-            function fallbackByQuery(){
-                try {
-                    var detailsUrl = Lampa.TMDB.api((method === 'tv' ? 'tv/' : 'movie/') + tmdbId + '?api_key=' + Lampa.TMDB.key() + '&language=en-US');
-                    var req2 = new Lampa.Reguest();
-                    req2.clear();
-                    req2.timeout(8000);
-                    req2.silent(detailsUrl, function(det){
-                        var titleEn = det && (det.original_title || det.original_name || det.title || det.name) || '';
-                        var year = 0;
-                        var dateStr = (det && (det.release_date || det.first_air_date)) || '';
-                        if (dateStr) {
-                            year = parseInt((dateStr + '').slice(0,4));
-                        }
-                        if (!titleEn) { return callback({ error: 'No title for KP search' }); }
-                        var searchUrl = 'https://kinopoiskapiunofficial.tech/api/v2.2/films?keyword=' + encodeURIComponent(titleEn) + (year ? ('&yearFrom=' + year + '&yearTo=' + year) : '');
-                        var xhr2 = new XMLHttpRequest();
-                        xhr2.open('GET', searchUrl, true);
-                        xhr2.setRequestHeader('X-API-KEY', kpApiKey);
-                        xhr2.onreadystatechange = function(){
-                            if (xhr2.readyState === 4) {
-                                if (xhr2.status >= 200 && xhr2.status < 300) {
-                                    try {
-                                        var r = JSON.parse(xhr2.responseText);
-                                        var item = r && r.items && r.items.length ? r.items[0] : null;
-                                        var kpVal = item && (typeof item.ratingKinopoisk === 'number' ? item.ratingKinopoisk : (item.rating && item.rating.kp));
-                                        if (typeof kpVal === 'number') callback({ kp: kpVal }); else callback({ error: 'No kp rating by query' });
-                                    } catch(e) { callback({ error: 'KP search parse error' }); }
-                                } else {
-                                    callback({ error: 'KP search http ' + xhr2.status });
-                                }
-                            }
-                        };
-                        xhr2.send();
-                    }, function(xh, st){ callback({ error: 'TMDB en details error ' + st }); });
-                } catch(e){ callback({ error: 'KP fallback error' }); }
+            } else {
+                // Ensure we have title/year from MDBList first (for harness timing)
+                ensureTitleYearFromMDBList(tmdbId, method, fallbackByTitleYear);
             }
         } catch (e) {
             callback({ error: 'KP general error' });
@@ -451,6 +453,35 @@
     // --- MDBList Fetcher State ---
     var mdblistRatingsCache = {};
     var mdblistRatingsPending = {};
+    // Cache identifiers and basic info from MDBList to avoid extra TMDB calls
+    var mdblistIdsByTmdb = {};
+    var mdblistTitleYearByTmdb = {};
+
+    function ensureTitleYearFromMDBList(tmdbId, method, onDone){
+        try {
+            var cached = mdblistTitleYearByTmdb[tmdbId];
+            if (cached && cached.title) { onDone(); return; }
+            var apiKey = Lampa.Storage.get('mdblist_api_key');
+            if (!apiKey) { onDone(); return; }
+            var media_type = method === 'tv' ? 'show' : 'movie';
+            var url = config.api_url + media_type + '/' + tmdbId + '?apikey=' + apiKey;
+            var req = new Lampa.Reguest();
+            req.clear();
+            req.timeout(8000);
+            req.silent(url, function(resp){
+                try {
+                    if (resp) {
+                        if (resp.ids && resp.ids.imdb) mdblistIdsByTmdb[tmdbId] = resp.ids.imdb;
+                        mdblistTitleYearByTmdb[tmdbId] = {
+                            title: resp.title || resp.original_title || null,
+                            year: resp.year || null
+                        };
+                    }
+                } catch(_){}
+                onDone();
+            }, function(){ onDone(); });
+        } catch(e){ onDone(); }
+    }
 
     // --- KinoPoisk Rating State ---
     var kpRatingsCache = {};
@@ -1309,5 +1340,13 @@
 
     // Original check before starting
     if (!window.plugin_interface_ready) startPlugin();
+
+    // --- Debug exposure (non-intrusive): allows calling internal fetchers from console for testing ---
+    try {
+        window.MDBLIST_DEBUG = {
+            fetchRatings: function (movieData, cb) { return fetchRatings(movieData, cb); },
+            fetchKinopoiskRating: function (movieData, cb) { return fetchKinopoiskRating(movieData, cb); }
+        };
+    } catch (e) { /* ignore */ }
 
 })();

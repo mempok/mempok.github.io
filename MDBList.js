@@ -223,34 +223,13 @@
 
     // --- Caching Functions ---
     function getCache(tmdb_id) {
-        // Ensure Lampa Storage is available for caching
-        if (!window.Lampa || !Lampa.Storage) return false;
-        var timestamp = new Date().getTime();
-        var cache = Lampa.Storage.cache(config.cache_key, config.cache_limit, {}); // Use Lampa's cache utility
-
-        if (cache[tmdb_id]) {
-            // Check if cache entry has expired
-            if ((timestamp - cache[tmdb_id].timestamp) > config.cache_time) {
-                delete cache[tmdb_id];
-                Lampa.Storage.set(config.cache_key, cache); // Update storage after removing expired entry
-                return false;
-            } 
-          return cache[tmdb_id].data; // Return cached data { imdb: ..., tmdb: ..., etc... }
-        }
+        // Caching disabled: always miss
         return false;
     }
 
     function setCache(tmdb_id, data) {
-        // Ensure Lampa Storage is available
-        if (!window.Lampa || !Lampa.Storage) return;
-        var timestamp = new Date().getTime();
-        var cache = Lampa.Storage.cache(config.cache_key, config.cache_limit, {});
-        // Store data along with a timestamp
-        cache[tmdb_id] = {
-            timestamp: timestamp,
-            data: data
-        };
-        Lampa.Storage.set(config.cache_key, cache); // Save updated cache to storage
+        // Caching disabled: no-op
+        return;
       }
 
     // --- Core Fetching Logic ---

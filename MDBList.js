@@ -284,6 +284,18 @@
         // 1. Check Cache
         var cached_ratings = getCache(tmdb_id);
         if (cached_ratings) {
+            // Hydrate helper caches for KP fallback from cached entry if present
+            try {
+                if (cached_ratings.ids && cached_ratings.ids.imdb) {
+                    mdblistIdsByTmdb[tmdb_id] = cached_ratings.ids.imdb;
+                }
+                if (cached_ratings.title || cached_ratings.year) {
+                    mdblistTitleYearByTmdb[tmdb_id] = {
+                        title: cached_ratings.title || null,
+                        year: cached_ratings.year || null
+                    };
+                }
+            } catch (e) {}
             // If valid cache exists, return it immediately via callback
             callback(cached_ratings);
             return;
@@ -338,9 +350,8 @@
                  ratingsResult.error = "Invalid response format from MDBList";
             }
 
-            // Cache the processed result (even if it's just {error: ...})
-            // Only cache successful results or non-auth related errors
-            if (ratingsResult.error === null || (ratingsResult.error && !ratingsResult.error.toLowerCase().includes("invalid api key"))) {
+            // Cache only successful results
+            if (ratingsResult.error === null) {
                  setCache(tmdb_id, ratingsResult);
             }
             // Execute the original callback with the result
@@ -355,11 +366,7 @@
 
             var errorResult = { error: errorMessage };
 
-            // Cache the error state to prevent rapid retries on persistent failures
-            // Avoid caching auth-related errors (like 401 Unauthorized) caused by bad keys
-            if (status !== 401 && status !== 403) {
-                setCache(tmdb_id, errorResult);
-            }
+            // Do not cache errors to avoid sticky failures
             // Execute the original callback with the error result
             callback(errorResult);
         }); // End network.silent
